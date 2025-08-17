@@ -97,7 +97,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $input.item.json;\nconst mall_id = item.mall_id;\nconst cmc_manager = item.cmc_manager;\nconst calc_date = item.calc_date;\nconst month = item.month;\n\n// PostgreSQL 쿼리 결과에서 매출 데이터 추출\nlet monthly_sales = 0;\n\n// 쿼리 결과가 있고 데이터가 있는 경우\nif ($input.item.json && Array.isArray($input.item.json)) {\n  // 해당 월의 데이터 찾기\n  const salesData = $input.item.json.find(row => {\n    // month가 숫자 형태(YYYYMM)로 반환되므로 문자열로 변환하여 비교\n    const rowMonth = String(row.month);\n    const targetMonth = month.replace('-', '');\n    return rowMonth === targetMonth;\n  });\n  \n  if (salesData) {\n    monthly_sales = salesData.sum_sal || 0;\n  }\n}\n\nreturn [{\n  json: {\n    mall_id,\n    cmc_manager,\n    calc_date,\n    month,\n    monthly_sales\n  }\n}];"
+        "jsCode": "const item = $input.item.json;\nconst mall_id = item.mall_id;\nconst cmc_manager = item.cmc_manager;\nconst calc_date = item.calc_date;\nconst month = item.month; // 예: '2025-02'\n\n// PostgreSQL 쿼리 결과에서 매출 데이터 추출\nlet monthly_sales = 0;\n\n// 쿼리 결과가 있고 데이터가 있는 경우\nif ($input.item.json && Array.isArray($input.item.json)) {\n  // 해당 월의 데이터 찾기\n  const salesData = $input.item.json.find(row => {\n    // row.month는 '202502' 형태, month는 '2025-02' 형태\n    // '2025-02'를 '202502'로 변환하여 비교\n    const targetMonth = month.replace('-', '');\n    return String(row.month) === targetMonth;\n  });\n  \n  if (salesData) {\n    monthly_sales = salesData.sum_sal || 0;\n  }\n}\n\nreturn [{\n  json: {\n    mall_id,\n    cmc_manager,\n    calc_date,\n    month,\n    monthly_sales\n  }\n}];"
       },
       "id": "extract-sales",
       "name": "7. 매출 데이터 추출",
