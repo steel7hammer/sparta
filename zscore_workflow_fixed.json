@@ -1,0 +1,261 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-400, 300]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1olU1oC6E75SzhqWtCNOXgm9JlNftIz63NQa4NASObrI",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Mall_ID_manager",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "read-mall-ids",
+      "name": "1. Mall_ID_manager 읽기",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [-200, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "2. 각 몰 반복 처리",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "wait-node",
+      "name": "3. API 제한 회피 대기",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst mall_id = item.mall_id;\nconst cmc_manager = item.cmc_manager;\n\n// 현재 날짜\nconst now = new Date();\nconst calc_date = now.toISOString().split('T')[0];\n\n// 2025년 2월부터 7월까지의 시작일과 종료일\nconst months = [\n  { month: '2025-02', start: '2025-02-01', end: '2025-02-28' },\n  { month: '2025-03', start: '2025-03-01', end: '2025-03-31' },\n  { month: '2025-04', start: '2025-04-01', end: '2025-04-30' },\n  { month: '2025-05', start: '2025-05-01', end: '2025-05-31' },\n  { month: '2025-06', start: '2025-06-01', end: '2025-06-30' },\n  { month: '2025-07', start: '2025-07-01', end: '2025-07-31' }\n];\n\n// 각 월별로 데이터 요청\nconst requests = months.map(m => ({\n  json: {\n    mall_id,\n    cmc_manager,\n    calc_date,\n    month: m.month,\n    startDate: m.start,\n    endDate: m.end\n  }\n}));\n\nreturn requests;"
+      },
+      "id": "prepare-requests",
+      "name": "4. 월별 데이터 요청 준비",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "month-batches",
+      "name": "5. 월별 반복",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://your-clickhouse-server:8123",
+        "sendQuery": true,
+        "query": "WITH sales_data AS (\nSELECT\nmall_id,\nformatDateTime(stat_date, '%Y-%m') AS month,\nany(category_name) AS \"Category\",\nsum(total_sales) AS \"This_month_sales\",\nsum(total_paymethod_payed - total_paymethod_refund - (paymethod_cash - paymethod_cash_refund)) AS \"This_month_real_sales\",\nsum(total_paymethod_payed) AS sum_sal\nFROM\ndata_bi_private.dist_sales_daily_stat_03\nWHERE\nmall_id = '{{ $json.mall_id }}'\nAND stat_date >= parseDateTimeBestEffort('{{ $json.startDate }}')\nAND stat_date < parseDateTimeBestEffort('{{ $json.endDate }}')\nGROUP BY\nmall_id, month\n)\nSELECT\nmonth,\nsum_sal\nFROM\nsales_data\nORDER BY\nmonth\nFORMAT JSONEachRow",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "clickhouse-query",
+      "name": "6. ClickHouse HTTP API 호출",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst mall_id = item.mall_id;\nconst cmc_manager = item.cmc_manager;\nconst calc_date = item.calc_date;\nconst month = item.month;\n\n// ClickHouse HTTP 응답에서 매출 데이터 추출\nlet monthly_sales = 0;\n\n// HTTP 응답이 성공적이고 데이터가 있는 경우\nif ($input.item.json && Array.isArray($input.item.json)) {\n  const salesData = $input.item.json.find(row => row.month === month);\n  if (salesData) {\n    monthly_sales = salesData.sum_sal || 0;\n  }\n}\n\nreturn [{\n  json: {\n    mall_id,\n    cmc_manager,\n    calc_date,\n    month,\n    monthly_sales\n  }\n}];"
+      },
+      "id": "extract-sales",
+      "name": "7. 매출 데이터 추출",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const salesData = $input.all();\nconst firstItem = salesData[0];\nconst mall_id = firstItem.json.mall_id;\nconst cmc_manager = firstItem.json.cmc_manager;\nconst calc_date = firstItem.json.calc_date;\n\n// 월별 매출 데이터 정리\nconst monthlyData = {};\nsalesData.forEach(item => {\n  monthlyData[item.json.month] = item.json.monthly_sales || 0;\n});\n\n// 평균 계산\nconst prev_3_months = ['2025-02', '2025-03', '2025-04'];\nconst recent_3_months = ['2025-05', '2025-06', '2025-07'];\n\nconst avg_sum_90_prev = prev_3_months.reduce((sum, month) => sum + (monthlyData[month] || 0), 0) / 3;\nconst avg_sum_90_recent = recent_3_months.reduce((sum, month) => sum + (monthlyData[month] || 0), 0) / 3;\n\n// zScore_Raw 형식에 맞춰 데이터 구성\nconst result = {\n  calc_date,\n  mall_id,\n  cmc_manager,\n  cmc_manager_name: cmc_manager, // 임시로 동일하게 설정\n  pg_join_date: '', // 패스\n  pg_recency_days: 0, // 패스\n  '2025-02': monthlyData['2025-02'] || 0,\n  '2025-03': monthlyData['2025-03'] || 0,\n  '2025-04': monthlyData['2025-04'] || 0,\n  '2025-05': monthlyData['2025-05'] || 0,\n  '2025-06': monthlyData['2025-06'] || 0,\n  '2025-07': monthlyData['2025-07'] || 0,\n  avg_sum_90_prev,\n  avg_sum_90_recent,\n  '2025-06': monthlyData['2025-06'] || 0, // 이전 30일\n  '2025-07': monthlyData['2025-07'] || 0, // 최근 30일\n  sfdc_has_history: false, // 패스\n  sfdc_gap_flag: 0, // 패스\n  ad_script_detect: 0, // 패스\n  fetch_status: 200,\n  fetch_error: '',\n  updated_at: new Date().toISOString().replace('T', ' ').substring(0, 19)\n};\n\nreturn [{ json: result }];"
+      },
+      "id": "process-data",
+      "name": "8. 데이터 가공 및 평균 계산",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1olU1oC6E75SzhqWtCNOXgm9JlNftIz63NQa4NASObrI",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "zScore_Raw",
+          "mode": "list"
+        },
+        "dataMode": "autoMapInputData",
+        "options": {}
+      },
+      "id": "write-to-sheet",
+      "name": "9. zScore_Raw 탭에 저장",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [1400, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "1. Mall_ID_manager 읽기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Mall_ID_manager 읽기": {
+      "main": [
+        [
+          {
+            "node": "2. 각 몰 반복 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. 각 몰 반복 처리": {
+      "main": [
+        [
+          {
+            "node": "3. API 제한 회피 대기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. API 제한 회피 대기": {
+      "main": [
+        [
+          {
+            "node": "4. 월별 데이터 요청 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. 월별 데이터 요청 준비": {
+      "main": [
+        [
+          {
+            "node": "5. 월별 반복",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. 월별 반복": {
+      "main": [
+        [
+          {
+            "node": "6. ClickHouse HTTP API 호출",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. ClickHouse HTTP API 호출": {
+      "main": [
+        [
+          {
+            "node": "7. 매출 데이터 추출",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. 매출 데이터 추출": {
+      "main": [
+        [
+          {
+            "node": "5. 월별 반복",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. 데이터 가공 및 평균 계산": {
+      "main": [
+        [
+          {
+            "node": "9. zScore_Raw 탭에 저장",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. zScore_Raw 탭에 저장": {
+      "main": [
+        [
+          {
+            "node": "2. 각 몰 반복 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "zscore-workflow-instance"
+  }
+}
